@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NDN Communication Visualization</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        #network {
+            border: 1px solid #ccc;
+            margin-bottom: 10px;
+            position: relative;
+        }
+        .node {
+            stroke: #fff;
+            stroke-width: 1.5px;
+        }
+        .link {
+            stroke: #999;
+            stroke-opacity: 0.6;
+        }
+        #info {
+            display: flex;
+            justify-content: space-between;
+        }
+        #log {
+            width: 100%;
+            max-height: 150px;
+            overflow-y: auto;
+            border-top: 1px solid #ccc;
+            padding-top: 5px;
+        }
+        .table-container {
+            width: 30%;
+            overflow-y: auto;
+            max-height: 400px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 4px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        #controls {
+            margin-bottom: 10px;
+        }
+        #controls button {
+            padding: 5px 10px;
+            font-size: 14px;
+            margin-right: 5px;
+        }
+        #step-info {
+            margin-top: 5px;
+            font-weight: bold;
+        }
+        #network svg {
+            background-color: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+
+<h2>NDN Communication Visualization</h2>
+
+<div id="controls">
+    <button onclick="prevStep()">Previous</button>
+    <button onclick="nextStep()">Next</button>
+    <button onclick="resetSimulation()">Reset Simulation</button>
+    <span id="step-info"></span>
+</div>
+
+<div id="network"></div>
+
+<div id="info">
+    <div class="table-container">
+        <h3>FIB (Forwarding Information Base)</h3>
+        <div id="fib"></div>
+    </div>
+    <div class="table-container">
+        <h3>PIT (Pending Interest Table)</h3>
+        <div id="pit"></div>
+    </div>
+    <div class="table-container">
+        <h3>Content Store (CS)</h3>
+        <div id="cs"></div>
+    </div>
+</div>
+
+<div id="log"></div>
+
+<script>
+// Network topology data
+const nodesData = [
+    { id: 'Consumer', x: 50, y: 200 },
+    { id: 'R1', x: 200, y: 100 },
+    { id: 'R2', x: 200, y: 300 },
+    { id: 'R3', x: 350, y: 100 },
+    { id: 'R4', x: 350, y: 300 },
+    { id: 'Producer', x: 500, y: 200 }
+];
+
+const linksData = [
+    { source: 'Consumer', target: 'R1' },
+    { source: 'Consumer', target: 'R2' },
+    { source: 'R1', target: 'R3' },
+    { source: 'R2', target: 'R4' },
+    { source: 'R3', target: 'Producer' },
+    { source: 'R4', target: 'Producer' }
+];
+
+// Data structures
+let FIB = {};
+let PIT = {};
+let CS = {};
+
+let timeStep = 0;
+let maxTimeStep = 0;
+let simulationSteps = [];
+
+// Initialize data structures
+function initDataStructures() {
+    FIB = {
+        'Consumer': { '/data': ['R1', 'R2'] },
+        'R1': { '/data': ['R3'] },
+        'R2': { '/data': ['R4'] },
+        'R3': { '/data': ['Producer'] },
+        'R4': { '/data': ['Producer'] },
+        'Producer': { '/data': [] }
+    };
+    PIT = {
+        'Consumer': {},
+        'R1': {},
+        'R2': {},
+        'R3': {},
+        'R4': {},
+        'Producer': {}
+    };
+    CS = {
+        'Consumer': {},
+        'R1': {},
+        'R2': {},
+        'R3': {},
+        'R4': {},
+        'Producer': { '/data/item1': 'DATA_CONTENT' }
+    };
+}
+
+// Initialize the visualization
+function initVisualization() {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('width', 600);
+    svg.setAttribute('height', 400);
+    svg.setAttribute('id', 'svgNetwork');
+    document.getElementById('network').innerHTML = '';
+    document.getElementById('network').appendChild(svg);
+
+    const defs = document.createElementNS(svgNS, 'defs');
+    svg.appendChild(defs);
+
+    // Arrowhead marker definition
+    const marker = document.createElementNS(svgNS, 'marker');
+    marker.setAttribute('id', 'arrowhead');
+    marker.setAttribute('markerWidth', '10');
+    marker.setAttribute('markerHeight', '7');
+    marker.setAttribute('refX', '0');
+    marker.setAttribute('refY', '3.5');
+    marker.setAttribute('orient', 'auto');
+    marker.setAttribute('markerUnits', 'strokeWidth');
+    const markerPath = document.createElementNS(svgNS, 'path');
+    markerPath.setAttribute('d', 'M0,0 L0,7 L10,3.5 z');
+    markerPath.setAttribute('fill', '#333');
+    marker.appendChild(markerPath);
+    defs.appendChild(marker);
+
+    const linkGroup = document.createElementNS(svgNS, 'g');
+    linkGroup.setAttribute('class', 'links');
+    svg.appendChild(linkGroup);
+
+    const nodeGroup = document.createElementNS(svgNS, 'g');
+    nodeGroup.setAttribute('class', 'nodes');
+    svg.appendChild(nodeGroup);
+
+    // Draw links
+    linksData.forEach(link => {
+        const sourceNode = nodesData.find(node => node.id === link.source);
+        const targetNode = nodesData.find(node => node.id === link.target);
+        const line = document.createElementNS(svgNS, 'line');
+        line.setAttribute('x1', sourceNode.x);
+        line.setAttribute('y1', sourceNode.y);
+        line.setAttribute('x2', targetNode.x);
+        line.setAttribute('y2', targetNode.y);
+        line.setAttribute('stroke', '#999');
+        line.setAttribute('stroke-width', 2);
+        linkGroup.appendChild(line);
+    });
+
+    // Draw nodes
+    nodesData.forEach(node => {
+        const group = document.createElementNS(svgNS, 'g');
+        group.setAttribute('class', 'node');
+        group.setAttribute('transform', `translate(${node.x},${node.y})`);
+        group.setAttribute('id', `node-${node.id}`);
+
+        const circle = document.createElementNS(svgNS, 'circle');
+        circle.setAttribute('r', 20);
+        circle.setAttribute('fill', '#1f77b4');
+        circle.setAttribute('stroke', '#fff');
+        circle.setAttribute('stroke-width', 1.5);
+        group.appendChild(circle);
+
+        const text = document.createElementNS(svgNS, 'text');
+        text.setAttribute('dy', 5);
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', '#fff');
+        text.textContent = node.id;
+        group.appendChild(text);
+
+        nodeGroup.appendChild(group);
+    });
+}
+
+// Start the simulation
+function startSimulation() {
+    initDataStructures();
+    initVisualization();
+    document.getElementById('log').innerHTML = '';
+    simulationSteps = [];
+    timeStep = 0;
+    maxTimeStep = 0;
+    generateSimulationSteps();
+    updateVisualization();
+    updateTables();
+}
+
+// Reset the simulation
+function resetSimulation() {
+    document.getElementById('log').innerHTML = '';
+    initDataStructures();
+    initVisualization();
+    simulationSteps = [];
+    timeStep = 0;
+    maxTimeStep = 0;
+    updateVisualization();
+    updateTables();
+    document.getElementById('step-info').textContent = '';
+}
+
+// Generate all simulation steps
+function generateSimulationSteps() {
+    const maxSteps = 30;
+    let currentTimeStep = 0;
+    let logs = [];
+    let pitStates = [];
+    let csStates = [];
+    let nodeHighlights = [];
+    let packetMovements = [];
+
+    // Initialize
+    logs.push(`<strong>Time Step ${currentTimeStep}</strong>`);
+    logs.push(`Consumer sends Interest for /data/item1`);
+    PIT['Consumer']['/data/item1'] = []; // Consumer's PIT (usually empty, but for consistency)
+    pitStates.push(JSON.parse(JSON.stringify(PIT)));
+    csStates.push(JSON.parse(JSON.stringify(CS)));
+    nodeHighlights.push({ 'Consumer': 'interest' });
+    packetMovements.push([]);
+    currentTimeStep++;
+
+    // Interest packets to process
+    let interestPackets = [{ from: 'Consumer', name: '/data/item1' }];
+    let dataPackets = [];
+
+    while (currentTimeStep <= maxSteps) {
+        logs.push(`<strong>Time Step ${currentTimeStep}</strong>`);
+        const newInterestPackets = [];
+        const newDataPackets = [];
+        const nodeState = {};
+        const packetMovement = [];
+
+        // Process Interest packets
+        interestPackets.forEach(packet => {
+            const { from, name } = packet;
+            const prefix = name.split('/')[1];
+            const nextHops = FIB[from][`/${prefix}`] || [];
+
+            if (CS[from][name]) {
+                // Data is available in CS, generate Data packet
+                dataPackets.push({ from, name });
+                nodeState[from] = 'data';
+                logs.push(`${from} has data for ${name} in CS, sending Data back`);
+            } else if (from === 'Producer') {
+                // Producer generates Data packet
+                dataPackets.push({ from, name });
+                nodeState[from] = 'data';
+                logs.push(`Producer generates Data for ${name}`);
+            } else {
+                // Forward Interest
+                nextHops.forEach(nextHop => {
+                    if (!PIT[nextHop][name]) {
+                        PIT[nextHop][name] = [from];
+                    } else if (!PIT[nextHop][name].includes(from)) {
+                        PIT[nextHop][name].push(from);
+                    }
+                    logs.push(`${from} forwards Interest for ${name} to ${nextHop}`);
+                    newInterestPackets.push({ from: nextHop, name });
+                    nodeState[nextHop] = 'interest';
+                    packetMovement.push({ from, to: nextHop, type: 'interest' });
+                });
+            }
+        });
+
+        // Process Data packets
+        dataPackets.forEach(packet => {
+            const { from, name } = packet;
+            if (PIT[from][name]) {
+                const faces = PIT[from][name];
+                faces.forEach(face => {
+                    logs.push(`${from} sends Data for ${name} to ${face}`);
+                    CS[from][name] = 'DATA_CONTENT'; // Cache the Data
+                    newDataPackets.push({ from: face, name });
+                    nodeState[face] = 'data';
+                    packetMovement.push({ from, to: face, type: 'data' });
+                });
+                delete PIT[from][name]; // Remove the PIT entry
+            }
+        });
+
+        // Update for next step
+        interestPackets = newInterestPackets;
+        dataPackets = newDataPackets;
+
+        // Save state
+        pitStates.push(JSON.parse(JSON.stringify(PIT)));
+        csStates.push(JSON.parse(JSON.stringify(CS)));
+        nodeHighlights.push(nodeState);
+        packetMovements.push(packetMovement);
+
+        // Stop if Data reaches Consumer
+        if (CS['Consumer']['/data/item1']) {
+            logs.push(`Data has reached the Consumer.`);
+            currentTimeStep++;
+            break;
+        }
+
+        currentTimeStep++;
+    }
+
+    // Save simulation steps
+    maxTimeStep = currentTimeStep - 1;
+    let logIndex = 0;
+    for (let i = 0; i <= maxTimeStep; i++) {
+        let nextLogIndex = logs.findIndex((log, idx) => idx > logIndex && log.includes(`Time Step ${i + 1}`));
+        if (nextLogIndex === -1) nextLogIndex = logs.length;
+        simulationSteps.push({
+            timeStep: i,
+            logs: logs.slice(logIndex, nextLogIndex),
+            PIT: pitStates[i],
+            CS: csStates[i],
+            nodeHighlights: nodeHighlights[i],
+            packetMovements: packetMovements[i]
+        });
+        logIndex = nextLogIndex;
+    }
+}
+
+// Next step
+function nextStep() {
+    if (timeStep < maxTimeStep) {
+        timeStep++;
+        updateVisualization();
+        updateTables();
+    }
+}
+
+// Previous step
+function prevStep() {
+    if (timeStep > 0) {
+        timeStep--;
+        updateVisualization();
+        updateTables();
+    }
+}
+
+// Update visualization for current time step
+function updateVisualization() {
+    const svg = document.getElementById('svgNetwork');
+    const currentStep = simulationSteps[timeStep];
+
+    // Update node colors
+    nodesData.forEach(node => {
+        const nodeGroup = document.getElementById(`node-${node.id}`);
+        const circle = nodeGroup.querySelector('circle');
+        const state = currentStep.nodeHighlights[node.id];
+        if (state === 'interest') {
+            circle.setAttribute('fill', '#ffcc00'); // Yellow for Interest
+        } else if (state === 'data') {
+            circle.setAttribute('fill', '#28a745'); // Green for Data
+        } else {
+            circle.setAttribute('fill', '#1f77b4'); // Default color
+        }
+    });
+
+    // Clear previous packet arrows
+    const existingArrows = svg.querySelectorAll('.packet-arrow');
+    existingArrows.forEach(arrow => arrow.remove());
+
+    // Draw packet movements
+    currentStep.packetMovements.forEach(packet => {
+        const { from, to, type } = packet;
+        const fromNode = nodesData.find(node => node.id === from);
+        const toNode = nodesData.find(node => node.id === to);
+        const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        arrow.setAttribute('x1', fromNode.x);
+        arrow.setAttribute('y1', fromNode.y);
+        arrow.setAttribute('x2', toNode.x);
+        arrow.setAttribute('y2', toNode.y);
+        arrow.setAttribute('stroke', type === 'interest' ? '#ffcc00' : '#28a745'); // Yellow for Interest, Green for Data
+        arrow.setAttribute('stroke-width', 4);
+        arrow.setAttribute('marker-end', 'url(#arrowhead)');
+        arrow.setAttribute('class', 'packet-arrow');
+        svg.appendChild(arrow);
+    });
+
+    // Update step info
+    document.getElementById('step-info').textContent = `Current Step: ${timeStep}`;
+
+    // Update log
+    const logDiv = document.getElementById('log');
+    logDiv.innerHTML = currentStep.logs.join('<br>');
+    logDiv.scrollTop = logDiv.scrollHeight;
+}
+
+// Update tables
+function updateTables() {
+    if (simulationSteps[timeStep]) {
+        const currentStep = simulationSteps[timeStep];
+        updateTable('fib', FIB);
+        updateTable('pit', currentStep.PIT);
+        updateTable('cs', currentStep.CS);
+    }
+}
+
+function updateTable(containerId, data) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+    for (const node in data) {
+        let table = `<h4>${node}</h4><table><tr><th>Name</th><th>Entries</th></tr>`;
+        for (const key in data[node]) {
+            let value = data[node][key];
+            if (Array.isArray(value)) {
+                value = value.join(', ');
+            } else if (typeof value === 'object') {
+                value = JSON.stringify(value);
+            }
+            table += `<tr><td>${key}</td><td>${value}</td></tr>`;
+        }
+        table += '</table>';
+        container.innerHTML += table;
+    }
+}
+
+// Start the simulation when the page loads
+window.onload = function() {
+    startSimulation();
+};
+</script>
+
+</body>
+</html>
